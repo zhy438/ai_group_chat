@@ -1,0 +1,14 @@
+version: '3.8'
+services:
+  db:
+    image: ankane/pgvector  # 带有向量支持的 Postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: ai_chat_db
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+volumes:
+  pgdata:

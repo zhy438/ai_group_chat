@@ -1,0 +1,24 @@
+# AI模型配置文件
+# 在此添加/修改可用的AI模型
+
+models:
+  - model_id: "mimo-v2-flash-free"
+    name: "MiMo V2 Flash"
+    provider: "xiaomi"
+    supports_tools: true
+    context_window: 256000
+    description: "小米MiMo V2 Flash，MoE架构，支持Hybrid-Thinking"
+
+  - model_id: "qwen-flash"
+    name: "Qwen Flash"
+    provider: "qwen"
+    supports_tools: true
+    context_window: 128000
+    description: "通义千问 Flash 版本"
+
+  - model_id: "deepseek-chat"
+    name: "DeepSeek Chat"
+    provider: "deepseek"
+    supports_tools: true
+    context_window: 64000
+    description: "DeepSeek对话模型"

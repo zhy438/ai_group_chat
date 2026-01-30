@@ -1,0 +1,15 @@
+{
+    "sqltools.connections": [
+        {
+            "ssh": "Disabled",
+            "previewLimit": 50,
+            "server": "localhost",
+            "port": 5432,
+            "driver": "PostgreSQL",
+            "name": "ai群聊",
+            "database": "ai_chat_db",
+            "username": "admin",
+            "password": "password"
+        }
+    ]
+}
