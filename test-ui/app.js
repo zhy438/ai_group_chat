@@ -5,6 +5,7 @@ let currentGroupId = null;
 let currentGroup = null;
 let editingMemberId = null;
 let models = [];
+let abortController = null;
 
 // DOM Elements
 const groupListEl = document.getElementById('groupList');
@@ -73,10 +74,22 @@ async function loadGroupDetails(groupId) {
         memberSectionEl.style.display = 'block';
         discussionPanelEl.style.display = 'block';
 
+        // Load context stats
+        await loadContextStats(groupId);
+
         // Sync Dropdown
         const modeSelect = document.getElementById('discussionModeSelect');
         if (modeSelect) {
             modeSelect.value = group.discussion_mode;
+        }
+
+        // Sync Compression Threshold Slider
+        const slider = document.getElementById('thresholdSlider');
+        const sliderVal = document.getElementById('thresholdValue');
+        if (slider) {
+            const val = group.compression_threshold !== undefined ? group.compression_threshold : 0.8;
+            slider.value = val;
+            if (sliderVal) sliderVal.textContent = `${(val * 100).toFixed(0)}%`;
         }
 
         if (welcomeScreenEl) welcomeScreenEl.style.display = 'none';
@@ -390,9 +403,16 @@ async function startDiscussion() {
     document.getElementById('questionInput').value = '';
 
     // Disable button
+    // UI Update: Hide Start, Show Stop
     const btn = document.getElementById('startDiscussionBtn');
-    btn.disabled = true;
-    btn.textContent = '🤔 讨论中...';
+    const stopBtn = document.getElementById('stopDiscussionBtn');
+
+    btn.style.display = 'none';
+    stopBtn.style.display = 'block';
+
+    // Init AbortController
+    if (abortController) abortController.abort();
+    abortController = new AbortController();
 
     // QA Mode buffer for each member
     const qaBuffers = {};
@@ -404,7 +424,8 @@ async function startDiscussion() {
         const response = await fetch(`${API_BASE}/groups/${currentGroupId}/discuss/stream`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content, user_name: userName, max_rounds: maxRounds, mode })
+            body: JSON.stringify({ content, user_name: userName, max_rounds: maxRounds, mode }),
+            signal: abortController.signal
         });
 
         if (!response.ok) throw new Error('讨论请求失败');
@@ -457,13 +478,28 @@ async function startDiscussion() {
         }
 
     } catch (e) {
-        alert('讨论出错: ' + e.message);
+        if (e.name === 'AbortError') {
+            messageAreaEl.insertAdjacentHTML('beforeend', `
+                <div class="message system" style="text-align: center; color: #ef4444; margin: 10px 0;">
+                    🛑 讨论已终止
+                </div>
+            `);
+        } else {
+            alert('讨论出错: ' + e.message);
+            console.error(e);
+        }
     } finally {
+        btn.style.display = 'block';
         btn.disabled = false;
         btn.textContent = '🚀 开始讨论';
+
+        const stopBtn = document.getElementById('stopDiscussionBtn');
+        if (stopBtn) stopBtn.style.display = 'none';
+        abortController = null;
+
         scrollToBottom();
-        // 刷新一次以确保最新状态（比如 ID 同步）
-        // loadMessages(currentGroupId); // Removed to keep current UI layout
+        // 刷新上下文状态
+        await loadContextStats(currentGroupId);
     }
 }
 
@@ -574,6 +610,8 @@ async function summarizeDiscussion() {
         btn.disabled = false;
         btn.textContent = '📝 得出结论';
         scrollToBottom();
+        // 刷新上下文状态
+        await loadContextStats(currentGroupId);
     }
 }
 
@@ -602,6 +640,17 @@ function setupEventListeners() {
         e.preventDefault();
         startDiscussion();
     });
+
+    const stopBtn = document.getElementById('stopDiscussionBtn');
+    if (stopBtn) {
+        stopBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            if (abortController) {
+                console.log('Sending abort signal...');
+                abortController.abort();
+            }
+        });
+    }
 
     const summarizeBtn = document.getElementById('summarizeBtn');
     if (summarizeBtn) {
@@ -689,6 +738,38 @@ function setupEventListeners() {
             event.target.style.display = 'none';
         }
     });
+
+    // 刷新上下文状态按钮
+    document.getElementById('refreshContextBtn').addEventListener('click', async (e) => {
+        e.preventDefault();
+        if (currentGroupId) {
+            await loadContextStats(currentGroupId);
+        }
+    });
+
+    const thresholdSlider = document.getElementById('thresholdSlider');
+    if (thresholdSlider) {
+        const thresholdVal = document.getElementById('thresholdValue');
+
+        thresholdSlider.addEventListener('input', (e) => {
+            const val = parseFloat(e.target.value);
+            if (thresholdVal) thresholdVal.textContent = `${(val * 100).toFixed(0)}%`;
+        });
+
+        thresholdSlider.addEventListener('change', async (e) => {
+            const val = parseFloat(e.target.value);
+            if (currentGroupId) {
+                try {
+                    await api(`/groups/${currentGroupId}/compression/threshold`, 'PUT', { threshold: val });
+                    // Refresh stats to update marker position
+                    await loadContextStats(currentGroupId);
+                } catch (err) {
+                    console.error(err);
+                    alert('更新阈值失败: ' + err.message);
+                }
+            }
+        });
+    }
 }
 
 function openModal(id) {
@@ -697,6 +778,83 @@ function openModal(id) {
 
 function closeModal(id) {
     document.getElementById(id).style.display = 'none';
+}
+
+// ============ Context Stats ============
+
+async function loadContextStats(groupId) {
+    try {
+        const stats = await api(`/groups/${groupId}/context/stats`);
+        renderContextStats(stats);
+    } catch (e) {
+        console.error('加载上下文状态失败:', e);
+    }
+}
+
+function renderContextStats(stats) {
+    const currentTokens = stats.current_tokens || 0;
+
+    // Get max tokens from new structure or fallback
+    let maxTokens = 128000;
+    if (stats.dynamic_context_window && stats.dynamic_context_window.min_context_window) {
+        maxTokens = stats.dynamic_context_window.min_context_window;
+    } else if (stats.compression_config && stats.compression_config.max_tokens) {
+        maxTokens = stats.compression_config.max_tokens;
+    } else if (stats.max_tokens) {
+        maxTokens = stats.max_tokens;
+    }
+
+    // Calculate ratio
+    const usageRatio = maxTokens > 0 ? currentTokens / maxTokens : 0;
+    const usagePercent = (usageRatio * 100).toFixed(1);
+
+    // Get threshold settings for tooltip and logic
+    const thresholdRatio = (stats.compression_config && stats.compression_config.threshold_ratio) || 0.8;
+    const thresholdTokens = (stats.compression_config && stats.compression_config.threshold_tokens)
+        || Math.floor(maxTokens * thresholdRatio);
+
+    // Update new compact UI
+    const currentTokensEl = document.getElementById('currentTokens');
+    if (currentTokensEl) currentTokensEl.textContent = formatTokens(currentTokens);
+
+    const maxTokensEl = document.getElementById('maxTokens');
+    if (maxTokensEl) maxTokensEl.textContent = formatTokens(maxTokens);
+
+    const progressTextEl = document.getElementById('contextProgressText');
+    if (progressTextEl) progressTextEl.textContent = `${usagePercent}%`;
+
+    // Update threshold marker position (percentage)
+    const markerEl = document.getElementById('thresholdMarker');
+    if (markerEl) {
+        markerEl.style.left = `${thresholdRatio * 100}%`;
+        const thresholdPercent = (thresholdRatio * 100).toFixed(0);
+        markerEl.parentElement.title = `压缩阈值: ${thresholdPercent}% (${formatTokens(thresholdTokens)})`;
+    }
+
+    // Update progress bar
+    const progressBar = document.getElementById('contextProgressBar');
+    progressBar.style.width = `${Math.min(usagePercent, 100)}%`;
+
+    // Color coding based on usage
+    progressBar.classList.remove('warning', 'danger');
+    if (usageRatio >= thresholdRatio) {
+        progressBar.classList.add('danger');
+    } else if (usageRatio >= thresholdRatio * 0.8) {
+        progressBar.classList.add('warning');
+    }
+
+    // Show stats container if hidden
+    const statsContainer = document.getElementById('minContextStats');
+    if (statsContainer) statsContainer.style.display = 'flex';
+}
+
+function formatTokens(tokens) {
+    if (tokens >= 1000000) {
+        return (tokens / 1000000).toFixed(1) + 'M';
+    } else if (tokens >= 1000) {
+        return (tokens / 1000).toFixed(1) + 'K';
+    }
+    return tokens.toString();
 }
 
 // Start

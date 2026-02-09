@@ -30,10 +30,36 @@
         <main class="main-content">
             <!-- 群聊信息栏 -->
             <header class="chat-header" id="chatHeader" style="display: none;">
-                <div class="chat-title">
-                    <h3 id="currentGroupName">选择一个群聊</h3>
-                    <span id="memberCount" class="member-count"></span>
+                <div class="header-left">
+                    <div class="chat-title">
+                        <h3 id="currentGroupName">选择一个群聊</h3>
+                        <span id="memberCount" class="member-count"></span>
+                    </div>
+
+                    <!-- 紧凑型上下文状态 -->
+                    <div id="minContextStats" class="mini-context-stats" style="display: none;">
+                        <div class="stats-row">
+                            <span class="stat-item" title="当前/最大 Token">
+                                📊 <span id="currentTokens">0</span> / <span id="maxTokens">0</span>
+                            </span>
+                            <span class="stat-item highlight" id="contextProgressText">0%</span>
+                            <button id="refreshContextBtn" class="icon-btn" title="刷新状态">🔄</button>
+                        </div>
+                        <div class="mini-progress-track" title="压缩阈值: 80%">
+                            <div class="mini-progress-bar" id="contextProgressBar"></div>
+                            <div class="mini-threshold-mark" id="thresholdMarker" title="压缩阈值"></div>
+                        </div>
+                        <!-- New: Compression Threshold Slider -->
+                        <div class="threshold-control"
+                            style="font-size: 10px; margin-top: 4px; display: flex; align-items: center; gap: 4px; opacity: 0.8;">
+                            <label for="thresholdSlider" title="动态调整压缩阈值">⚙️ 阈值:</label>
+                            <input type="range" id="thresholdSlider" min="0.1" max="1.0" step="0.05" value="0.8"
+                                style="width: 60px; height: 4px;">
+                            <span id="thresholdValue" title="当前设定值">80%</span>
+                        </div>
+                    </div>
                 </div>
+
                 <div class="header-actions">
                     <button id="setManagerBtn" class="btn btn-secondary">管理员设置</button>
                     <button id="addMemberBtn" class="btn btn-secondary">+ 添加成员</button>
@@ -81,6 +107,10 @@
                         style="display: flex; flex-direction: column; gap: 8px; width: 120px;">
                         <button id="startDiscussionBtn" class="btn btn-primary" style="flex: 1; margin: 0; padding: 0;">
                             🚀 开始讨论
+                        </button>
+                        <button id="stopDiscussionBtn" class="btn"
+                            style="flex: 1; margin: 0; padding: 0; background-color: #ef4444; color: white; border: none; display: none;">
+                            🛑 终止讨论
                         </button>
                         <button id="summarizeBtn" class="btn btn-secondary"
                             style="flex: 1; margin: 0; padding: 0; background-color: #5a6b7c; color: white; border: none;">

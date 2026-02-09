@@ -533,3 +533,147 @@ textarea {
     font-size: 3rem;
     margin-bottom: 10px;
 }
+
+
+/* ============ Compact Context Stats (in Header) ============ */
+.chat-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    /* Allow header to accommodate more content */
+    padding: 15px 20px;
+}
+
+.header-left {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.mini-context-stats {
+    background: rgba(0, 0, 0, 0.05);
+    padding: 6px 10px;
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    width: 280px;
+    /* Limit width */
+}
+
+.stats-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-family: inherit;
+    color: #4b5563;
+}
+
+.stat-item.highlight {
+    font-weight: 600;
+    color: var(--primary-color);
+}
+
+.icon-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 2px;
+    opacity: 0.6;
+    transition: opacity 0.2s;
+}
+
+.icon-btn:hover {
+    opacity: 1;
+}
+
+.mini-progress-track {
+    position: relative;
+    height: 6px;
+    background: #e5e7eb;
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.mini-progress-bar {
+    height: 100%;
+    background: var(--success-color);
+    width: 0%;
+    border-radius: 3px;
+    transition: width 0.3s ease, background 0.3s ease;
+}
+
+.mini-progress-bar.warning {
+    background: #fbbf24;
+}
+
+.mini-progress-bar.danger {
+    background: var(--danger-color);
+}
+
+/* Threshold Marker (Optional visual aid) */
+.mini-threshold-mark {
+    position: absolute;
+    top: 0;
+    left: 80%;
+    /* Default threshold */
+    width: 2px;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.2);
+    z-index: 10;
+}
+
+/* =========================================
+   Layout Alignment Fixes (Step 3330)
+   ========================================= */
+
+/* 强制 Header 左侧区域横向排列，使标题和上下文卡片并排 */
+.header-left {
+    display: flex;
+    flex-direction: row !important;
+    /* Force row layout */
+    align-items: center;
+    /* Vertically center */
+    gap: 20px;
+}
+
+/* 调整标题区域 */
+.chat-title {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    max-width: 200px;
+    /* Optional cap */
+}
+
+.chat-title h3 {
+    margin: 0;
+    font-size: 1.1rem;
+    line-height: 1.3;
+}
+
+.member-count {
+    font-size: 0.8rem;
+    color: #6b7280;
+    margin-top: 2px;
+}
+
+/* 调整上下文卡片样式以适应横向布局 */
+.mini-context-stats {
+    width: 250px;
+    /* Specific width */
+    margin: 0 !important;
+    padding: 6px 10px !important;
+    background: #f9fafb !important;
+    border: 1px solid #e5e7eb;
+}
+
+/* Header layout refinement */
+.chat-header {
+    padding: 12px 20px;
+    /* Slightly reduce padding */
+    height: auto;
+    min-height: 60px;
+}

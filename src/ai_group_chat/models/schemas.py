@@ -21,6 +21,19 @@ class MessageRole(str, Enum):
     SYSTEM = "system"
 
 
+class MessageType(str, Enum):
+    """
+    消息类型 - 用于上下文压缩时的分类
+    
+    不同类型的消息有不同的保留策略和权重
+    """
+    USER = "user"           # 用户消息：最重要，全部保留
+    STATUS = "status"       # 关键状态：任务完成/失败等决策节点
+    REASONING = "reasoning" # 推理过程：思考、方案比较等
+    FAILURE = "failure"     # 失败记录：尝试失败的原因
+    NORMAL = "normal"       # 普通消息：未分类的默认类型
+
+
 # ============ AI成员模型 ============
 
 class AIMember(BaseModel):
@@ -63,6 +76,7 @@ class GroupChat(BaseModel):
     manager_thinking: bool = False
     manager_temperature: float = 0.7
     discussion_mode: DiscussionMode = DiscussionMode.FREE
+    compression_threshold: float = 0.8
     created_at: datetime = Field(default_factory=datetime.now)
 
 
@@ -84,6 +98,12 @@ class Message(BaseModel):
     sender_name: Optional[str] = None   # 发送者名称
     mode: Optional[DiscussionMode] = None # 消息所属的模式
     created_at: datetime = Field(default_factory=datetime.now)
+    
+    # ====== 记忆管理相关字段 ======
+    message_type: MessageType = MessageType.NORMAL  # 消息分类
+    is_compressed: bool = False                      # 是否已被压缩
+    original_content: Optional[str] = None           # 压缩前的原始内容
+    value_score: Optional[float] = None              # 价值评分（用于排序）
 
 
 class MessageCreate(BaseModel):

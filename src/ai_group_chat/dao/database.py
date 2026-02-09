@@ -80,9 +80,48 @@ class Database:
                     sender_name TEXT,
                     mode TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    message_type TEXT DEFAULT 'normal',
+                    is_compressed BOOLEAN DEFAULT FALSE,
+                    original_content TEXT,
+                    value_score REAL,
                     FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
                 )
             """)
+            
+            # Context Snapshots Table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS group_context_snapshots (
+                    id SERIAL PRIMARY KEY,
+                    group_id TEXT NOT NULL,
+                    last_message_id TEXT,
+                    context_content TEXT NOT NULL,  -- JSON serialized list of messages
+                    token_count INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+                )
+            """)
+            conn.commit()  # <--- Fix: Commit immediately to prevent rollback by subsequent errors
+            
+            # 为已存在的表添加新字段（兼容性处理）
+            memory_columns = [
+                ("message_type", "TEXT DEFAULT 'normal'"),
+                ("is_compressed", "BOOLEAN DEFAULT FALSE"),
+                ("original_content", "TEXT"),
+                ("value_score", "REAL"),
+            ]
+            for col_name, col_type in memory_columns:
+                try:
+                    cur.execute(f"ALTER TABLE messages ADD COLUMN {col_name} {col_type}")
+                except psycopg2.errors.DuplicateColumn:
+                    pass  # Column already exists
+                conn.commit()
+                
+            # compression_threshold
+            try:
+                cur.execute("ALTER TABLE groups ADD COLUMN compression_threshold REAL DEFAULT 0.8")
+                conn.commit()
+            except psycopg2.errors.DuplicateColumn:
+                conn.rollback()
             
             conn.commit()
             conn.close()

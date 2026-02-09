@@ -47,6 +47,10 @@ cleanup() {
     echo -e "\n${RED}🛑 正在停止服务...${NC}"
     kill $BACKEND_PID 2>/dev/null
     kill $FRONTEND_PID 2>/dev/null
+    
+    # 强制清理端口占用（确保子进程被杀死）
+    lsof -ti:8000 | xargs kill -9 2>/dev/null
+    lsof -ti:8001 | xargs kill -9 2>/dev/null
     exit
 }
 

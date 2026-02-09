@@ -1,6 +1,7 @@
 from .schemas import (
     DiscussionMode,
     MessageRole,
+    MessageType,
     AIMember,
     AIMemberCreate,
     AIMemberUpdate,

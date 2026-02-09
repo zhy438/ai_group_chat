@@ -97,7 +97,7 @@ def _build_system_prompt(member: AIMember, all_members: list[AIMember], mode: Di
     
     # 根据模式调整提示词
     if mode == DiscussionMode.QA:
-        base_prompt += "\n【当前模式：一问一答 (QA)】\n请直接回答用户的问题，提供高质量、独立的见解。\n尽力减少与其他群成员的闲聊或互动，除非必须引用他人的观点。\n重点在于展示你独特的视角和知识。"
+        base_prompt += "\n【当前模式：一问一答 (QA)】\n请直接回答用户的问题，提供高质量、独立的见解。\n请参考之前的对话历史（Context），如果用户是在追问之前的话题，请基于上下文回答。\n尽力减少与其他群成员的闲聊或互动，除非必须引用他人的观点。\n重点在于展示你独特的视角和知识。"
     else:
         base_prompt += "\n【当前模式：自由讨论】\n自然地参与讨论，积极与其他成员互动，可以补充、附和或提出不同看法。\n通过协作和交流来解决问题。"
     

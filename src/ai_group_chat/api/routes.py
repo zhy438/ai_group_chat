@@ -149,6 +149,18 @@ async def set_manager_config(group_id: str, data: ManagerConfigRequest):
     return {"message": "管理员配置设置成功"}
 
 
+class CompressionConfig(BaseModel):
+    threshold: float
+
+
+@router.put("/groups/{group_id}/compression/threshold")
+async def update_compression_threshold(group_id: str, config: CompressionConfig):
+    """更新群聊压缩阈值"""
+    if not await chat_service.update_compression_threshold(group_id, config.threshold):
+        raise HTTPException(status_code=404, detail="群聊不存在")
+    return {"message": "更新成功"}
+
+
 # ============ 讨论功能 ============
 
 @router.post("/groups/{group_id}/discuss", response_model=DiscussionResponse)
@@ -267,3 +279,120 @@ async def reload_models():
     models = get_models()
     return {"message": f"已重新加载 {len(models)} 个模型配置"}
 
+
+# ============ 上下文管理（调试用） ============
+
+@router.get("/groups/{group_id}/context/stats")
+async def get_context_stats(group_id: str):
+    """
+    获取群聊的上下文统计信息
+    
+    用于调试和监控上下文压缩效果
+    """
+    group = chat_service.get_group(group_id)
+    if not group:
+        raise HTTPException(status_code=404, detail="群聊不存在")
+    
+    # 动态设置上下文窗口
+    # 动态设置上下文窗口
+    min_context_window = chat_service.get_min_context_window(group)
+    chat_service.context_manager.set_max_tokens(min_context_window)
+    
+    # 获取真实上下文（包含快照和增量压缩后的结果）
+    # 这确保了前端显示的 Token 数与实际发送给 LLM 的一致
+    autogen_msgs = await chat_service._get_history_as_autogen_messages(group_id, limit=0)
+    
+    current_tokens = 0
+    for m in autogen_msgs:
+        current_tokens += chat_service.context_manager.count_tokens(m.content)
+        
+    stats = {
+        "current_tokens": current_tokens,
+        "message_count": len(autogen_msgs),
+    }
+    
+    # 为了类型分布统计，我们需要原始消息的分类信息
+    raw_messages = chat_service.get_messages(group_id, limit=1000)
+    
+    # 添加更多详细信息
+    from collections import Counter
+    type_counts = Counter(msg.message_type.value for msg in raw_messages)
+    
+    # 收集各成员模型的上下文窗口
+    from ..services.chat_service import _MODEL_CONTEXT_WINDOWS
+    member_windows = {m.name: _MODEL_CONTEXT_WINDOWS.get(m.model_id, 128000) 
+                      for m in group.members} if group.members else {}
+    
+    return {
+        **stats,
+        "type_distribution": dict(type_counts),
+        "compression_config": {
+            "max_tokens": chat_service.context_manager.max_tokens,
+            "threshold_ratio": group.compression_threshold,
+            "threshold_tokens": int(chat_service.context_manager.max_tokens * group.compression_threshold),
+        },
+        "dynamic_context_window": {
+            "min_context_window": min_context_window,
+            "member_windows": member_windows,
+        }
+    }
+
+
+@router.post("/groups/{group_id}/context/compress")
+async def force_compress(group_id: str):
+    """
+    强制执行上下文压缩（忽略阈值）
+    
+    用于测试压缩效果
+    """
+    messages = chat_service.get_messages(group_id, limit=1000)
+    
+    if not messages:
+        raise HTTPException(status_code=404, detail="没有消息可压缩")
+    
+    # 获取压缩前统计
+    before_stats = chat_service.context_manager.get_stats(messages)
+    
+    # 强制执行压缩
+    compressed = chat_service.context_manager.process(messages, force=True)
+    
+    # 获取压缩后统计
+    after_stats = chat_service.context_manager.get_stats(compressed)
+    
+    return {
+        "before": {
+            "message_count": before_stats["message_count"],
+            "tokens": before_stats["current_tokens"],
+        },
+        "after": {
+            "message_count": after_stats["message_count"],
+            "tokens": after_stats["current_tokens"],
+        },
+        "saved": {
+            "messages": before_stats["message_count"] - after_stats["message_count"],
+            "tokens": before_stats["current_tokens"] - after_stats["current_tokens"],
+            "ratio": f"{(1 - after_stats['current_tokens'] / before_stats['current_tokens']) * 100:.1f}%"
+        }
+    }
+
+
+@router.put("/groups/{group_id}/context/threshold")
+async def set_compression_threshold(group_id: str, ratio: float = 0.8):
+    """
+    临时调整压缩触发阈值（用于测试）
+    
+    - ratio: 0.1 ~ 1.0，默认 0.8 表示 80%
+    """
+    if not 0.1 <= ratio <= 1.0:
+        raise HTTPException(status_code=400, detail="ratio 必须在 0.1 到 1.0 之间")
+    
+    old_ratio = chat_service.context_manager.threshold_ratio
+    chat_service.context_manager.threshold_ratio = ratio
+    chat_service.context_manager.threshold_tokens = int(
+        chat_service.context_manager.max_tokens * ratio
+    )
+    
+    return {
+        "message": f"阈值已从 {old_ratio*100:.0f}% 调整为 {ratio*100:.0f}%",
+        "new_threshold_tokens": chat_service.context_manager.threshold_tokens
+    }
