@@ -1,10 +1,53 @@
-# Python-generated files
+# OS
+.DS_Store
+
+# Python
 __pycache__/
-*.py[oc]
+*.py[cod]
+*.so
+.Python
 build/
 dist/
 wheels/
-*.egg-info
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
 
 # Virtual environments
-.venv
+.venv/
+venv/
+env/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Local databases and runtime artifacts
+*.db
+*.sqlite
+*.sqlite3
+chat_data.db
+*.log
+backend.log
+frontend.log
+*.pid
+
+# Local tooling/state
+.langgraph_api/
+docs/
+
+# IDE/editor
+.vscode/
+.idea/
+
+# Node/frontend (if added in this repo later)
+node_modules/
+dist-ssr/
+.npm/
+.pnpm-store/

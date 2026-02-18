@@ -83,7 +83,6 @@ class GroupChat(BaseModel):
 class GroupChatCreate(BaseModel):
     """创建群聊的请求"""
     name: str
-    discussion_mode: DiscussionMode = DiscussionMode.FREE
 
 
 # ============ 消息模型 ============

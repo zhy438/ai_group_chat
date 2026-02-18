@@ -8,6 +8,34 @@ NC='\033[0m'
 
 echo -e "${BLUE}=== AI群聊启动脚本 ===${NC}"
 
+# 启动并检查数据库
+echo -e "${BLUE}🗄️  启动数据库服务 (PostgreSQL)...${NC}"
+if ! command -v docker &> /dev/null; then
+    echo -e "${RED}❌ 未检测到 docker 命令，请先启动 Docker Desktop。${NC}"
+    exit 1
+fi
+
+if ! docker compose up -d db; then
+    echo -e "${RED}❌ 数据库容器启动失败，请检查 docker compose 配置。${NC}"
+    exit 1
+fi
+
+echo -e "${BLUE}⏳ 等待数据库就绪...${NC}"
+DB_READY=0
+for i in {1..30}; do
+    if docker compose exec -T db pg_isready -U admin -d ai_chat_db >/dev/null 2>&1; then
+        DB_READY=1
+        break
+    fi
+    sleep 1
+done
+
+if [ "$DB_READY" -ne 1 ]; then
+    echo -e "${RED}❌ 数据库在 30 秒内未就绪，请检查容器日志：docker compose logs db${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✅ 数据库已就绪${NC}"
+
 # 清理旧进程
 echo -e "${BLUE}🧹 清理旧进程 (端口 8000, 8001)...${NC}"
 lsof -ti:8000 | xargs kill -9 2>/dev/null

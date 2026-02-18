@@ -5,6 +5,7 @@ import yaml
 import json
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
+from loguru import logger
 
 from ..models import (
     GroupChat, GroupChatCreate,
@@ -199,11 +200,18 @@ async def start_discussion_stream(group_id: str, request: DiscussionRequest):
                     "created_at": message.created_at.isoformat() if message.created_at else None,
                 }, ensure_ascii=False)
                 yield f"data: {event_data}\n\n"
+                try:
+                    stats_data = await chat_service.get_context_stats(group_id)
+                    yield f"data: {json.dumps({'type': 'stats', 'stats': stats_data}, ensure_ascii=False)}\n\n"
+                except Exception as stats_err:
+                    logger.warning(f"推送实时上下文统计失败: {stats_err}")
             
             # 发送完成信号
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
         except ValueError as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': f'讨论服务异常: {str(e)}'})}\n\n"
     
     return StreamingResponse(
         event_generator(),
@@ -231,11 +239,18 @@ async def summarize_discussion(group_id: str, request: SummarizeRequest):
                     "created_at": message.created_at.isoformat() if message.created_at else None,
                 }, ensure_ascii=False)
                 yield f"data: {event_data}\n\n"
+                try:
+                    stats_data = await chat_service.get_context_stats(group_id)
+                    yield f"data: {json.dumps({'type': 'stats', 'stats': stats_data}, ensure_ascii=False)}\n\n"
+                except Exception as stats_err:
+                    logger.warning(f"推送实时上下文统计失败: {stats_err}")
             
             # 发送完成信号
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
         except ValueError as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': f'总结服务异常: {str(e)}'})}\n\n"
     
     return StreamingResponse(
         event_generator(),
@@ -289,53 +304,10 @@ async def get_context_stats(group_id: str):
     
     用于调试和监控上下文压缩效果
     """
-    group = chat_service.get_group(group_id)
-    if not group:
+    if not chat_service.get_group(group_id):
         raise HTTPException(status_code=404, detail="群聊不存在")
-    
-    # 动态设置上下文窗口
-    # 动态设置上下文窗口
-    min_context_window = chat_service.get_min_context_window(group)
-    chat_service.context_manager.set_max_tokens(min_context_window)
-    
-    # 获取真实上下文（包含快照和增量压缩后的结果）
-    # 这确保了前端显示的 Token 数与实际发送给 LLM 的一致
-    autogen_msgs = await chat_service._get_history_as_autogen_messages(group_id, limit=0)
-    
-    current_tokens = 0
-    for m in autogen_msgs:
-        current_tokens += chat_service.context_manager.count_tokens(m.content)
-        
-    stats = {
-        "current_tokens": current_tokens,
-        "message_count": len(autogen_msgs),
-    }
-    
-    # 为了类型分布统计，我们需要原始消息的分类信息
-    raw_messages = chat_service.get_messages(group_id, limit=1000)
-    
-    # 添加更多详细信息
-    from collections import Counter
-    type_counts = Counter(msg.message_type.value for msg in raw_messages)
-    
-    # 收集各成员模型的上下文窗口
-    from ..services.chat_service import _MODEL_CONTEXT_WINDOWS
-    member_windows = {m.name: _MODEL_CONTEXT_WINDOWS.get(m.model_id, 128000) 
-                      for m in group.members} if group.members else {}
-    
-    return {
-        **stats,
-        "type_distribution": dict(type_counts),
-        "compression_config": {
-            "max_tokens": chat_service.context_manager.max_tokens,
-            "threshold_ratio": group.compression_threshold,
-            "threshold_tokens": int(chat_service.context_manager.max_tokens * group.compression_threshold),
-        },
-        "dynamic_context_window": {
-            "min_context_window": min_context_window,
-            "member_windows": member_windows,
-        }
-    }
+
+    return await chat_service.get_context_stats(group_id)
 
 
 @router.post("/groups/{group_id}/context/compress")

@@ -1,126 +1,87 @@
-# AI 群聊项目 🤖💬
+# AI Group Chat
 
-> 让多个AI大模型在群聊中协作讨论，解决你的问题！
+多模型协作群聊后端服务，支持流式讨论、并发一问一答、总结、上下文压缩与实时 token 状态推送。
 
-## 项目简介
-
-你可以在一个群聊中添加多个不同的大模型作为成员，这些大模型旨在解决你提出的问题：
-
-- 🗣️ **自由讨论**: 提出一个想法，让AI们自行讨论，最后给你一个结果
-- 👑 **主导模式**: 让某个成员率先提出观点，让其他成员以它的方向为基准进行讨论
-- 📋 **任务分配**: 给不同的模型分配不同的任务（gemini负责多模态理解、gpt负责总结等）
-- 🏃 **抢答模式**: 一个模型率先提出方案，后续模型附和或质疑
+## 功能特性
+- 群聊管理：创建/删除群聊，管理成员与管理员模型参数
+- 讨论模式：
+  - `free`：多模型自由讨论
+  - `qa`：一问一答（成员并发回答）
+- 流式输出：SSE 实时返回消息
+- 上下文管理：长对话压缩、快照、增量加载
+- 实时状态：SSE 推送 `stats` 事件，前端可按消息更新 token 使用量
 
 ## 技术栈
-
-- **后端框架**: FastAPI
-- **包管理**: uv
-- **AI编排**: LangGraph
-- **模型调用**: LiteLLM + aihubmix
-- **数据库**: PostgreSQL (with pgvector)
+- FastAPI
+- AutoGen AgentChat
+- PostgreSQL (Docker)
+- uv / Python 3.11+
 
 ## 项目结构
-
-```
+```text
 ai_group_chat/
-├── docker-compose.yml          # Docker配置（PostgreSQL）
-├── pyproject.toml              # 项目配置
-├── .env.example                # 环境变量示例
-└── src/
-    └── ai_group_chat/
-        ├── __init__.py
-        ├── main.py             # FastAPI 应用入口
-        ├── config.py           # 配置管理
-        ├── api/
-        │   ├── __init__.py
-        │   └── routes.py       # API 路由定义
-        ├── models/
-        │   ├── __init__.py
-        │   └── schemas.py      # Pydantic 数据模型
-        ├── services/
-        │   ├── __init__.py
-        │   └── chat_service.py # 业务逻辑层
-        ├── llm/
-        │   ├── __init__.py
-        │   └── client.py       # LiteLLM 客户端封装
-        └── graph/
-            ├── __init__.py
-            ├── state.py        # LangGraph 状态定义
-            ├── nodes.py        # LangGraph 节点定义
-            └── builder.py      # LangGraph 图构建器
+├── config/models.yaml
+├── docker-compose.yml
+├── docs/
+├── src/ai_group_chat/
+│   ├── api/routes.py
+│   ├── agents/group_chat.py
+│   ├── dao/
+│   ├── memory/
+│   ├── models/schemas.py
+│   └── services/chat_service.py
+├── start.sh
+└── pyproject.toml
 ```
 
 ## 快速开始
-
-### 1. 环境配置
-
-```bash
-# 复制环境变量配置
-cp .env.example .env
-
-# 编辑 .env 文件，填入你的 API Key
-```
-
-### 2. 启动数据库
-
-```bash
-docker-compose up -d
-```
-
-### 3. 安装依赖
-
+1. 安装依赖
 ```bash
 uv sync
 ```
 
-### 4. 启动服务
-
+2. 配置环境变量
 ```bash
-uv run uvicorn ai_group_chat.main:app --reload --port 8000
+cp .env.example .env
 ```
+编辑 `.env` 填写你的 `AI_API_KEY`。
 
-### 5. 访问 API 文档
+3. 启动服务（推荐）
+```bash
+./start.sh
+```
+该脚本会自动：
+- 启动 PostgreSQL 容器
+- 等待数据库就绪
+- 启动后端（8000）与调试前端（8001）
 
-打开浏览器访问: http://localhost:8000/docs
+4. 访问
+- API 文档：`http://localhost:8000/docs`
+- 健康检查：`http://localhost:8000/health`
 
-## API 接口
+## 关键接口
+- 群聊：
+  - `POST /api/v1/groups`
+  - `GET /api/v1/groups`
+  - `GET /api/v1/groups/{group_id}`
+  - `DELETE /api/v1/groups/{group_id}`
+- 成员：
+  - `POST /api/v1/groups/{group_id}/members`
+  - `PATCH /api/v1/groups/{group_id}/members/{member_id}`
+  - `DELETE /api/v1/groups/{group_id}/members/{member_id}`
+- 讨论：
+  - `POST /api/v1/groups/{group_id}/discuss/stream`（SSE）
+  - `POST /api/v1/groups/{group_id}/summarize`（SSE）
+- 上下文：
+  - `GET /api/v1/groups/{group_id}/context/stats`
+  - `PUT /api/v1/groups/{group_id}/compression/threshold`
+- 模型：
+  - `GET /api/v1/models`
+  - `POST /api/v1/models/reload`
 
-### 群聊管理
-- `POST /api/v1/groups` - 创建群聊
-- `GET /api/v1/groups` - 获取群聊列表
-- `GET /api/v1/groups/{id}` - 获取群聊详情
-- `DELETE /api/v1/groups/{id}` - 删除群聊
-
-### 成员管理
-- `POST /api/v1/groups/{id}/members` - 添加AI成员
-- `DELETE /api/v1/groups/{id}/members/{mid}` - 移除AI成员
-- `PATCH /api/v1/groups/{id}/members/{mid}/task` - 更新成员任务
-
-### 讨论功能
-- `POST /api/v1/groups/{id}/discuss` - 启动讨论
-- `POST /api/v1/groups/{id}/discuss/stream` - 流式讨论 (SSE)
-- `GET /api/v1/groups/{id}/messages` - 获取消息历史
-
-### 模型能力
-- `GET /api/v1/models` - 获取可用模型列表
-
-## 讨论模式
-
-| 模式 | 说明 |
-|------|------|
-| `free` | 自由讨论：所有模型自行讨论 |
-| `leader` | 主导模式：指定模型主导方向 |
-| `task` | 任务分配：给每个模型分配特定任务 |
-| `race` | 抢答模式：先答为主，后续附和或质疑 |
-
-## 后续规划
-
-- [ ] 数据库持久化 (PostgreSQL + SQLAlchemy)
-- [ ] 用户认证系统
-- [ ] 向量检索 (pgvector)
-- [ ] WebSocket 实时通信
-- [ ] 前端界面 (Vue3)
+## 安全说明
+- 请勿提交 `.env`、日志、数据库文件到 GitHub（已在 `.gitignore` 处理）。
+- 如果历史上曾泄露过密钥，请立即在服务商后台轮换。
 
 ## License
-
 MIT

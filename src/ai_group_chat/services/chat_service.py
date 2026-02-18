@@ -1,6 +1,7 @@
 """聊天服务 - 业务逻辑层"""
 
 import re
+from collections import Counter
 from pathlib import Path
 import yaml
 from loguru import logger
@@ -136,7 +137,7 @@ class ChatService:
     # ============ 群聊管理 ============
     
     def create_group(self, data: GroupChatCreate) -> GroupChat:
-        return self.repo.create_group(data.name, data.discussion_mode)
+        return self.repo.create_group(data.name)
     
     def get_group(self, group_id: str) -> GroupChat | None:
         return self.repo.get_group(group_id)
@@ -195,7 +196,7 @@ class ChatService:
         if not group or not group.members:
             raise ValueError("群聊不存在或没有成员")
         
-        mode = request.mode if request.mode else group.discussion_mode
+        mode = request.mode if request.mode else DiscussionMode.FREE
 
         # 保存用户消息
         self.repo.save_message(group_id, MessageRole.USER, request.content, request.user_name, mode)
@@ -245,7 +246,7 @@ class ChatService:
         if not group or not group.members:
             raise ValueError("群聊不存在或没有成员")
         
-        mode = request.mode if request.mode else group.discussion_mode
+        mode = request.mode if request.mode else DiscussionMode.FREE
 
         # 保存用户消息
         self.repo.save_message(group_id, MessageRole.USER, request.content, request.user_name, mode)
@@ -270,16 +271,23 @@ class ChatService:
             generator = ai_group_chat.stream_qa_discussion(request.content)
         else:
             generator = ai_group_chat.stream_discuss(request.content, request.max_rounds)
-            
-        async for msg_data in generator:
-            message = self.repo.save_message(
-                group_id, 
-                MessageRole.ASSISTANT, 
-                msg_data["content"], 
-                msg_data["sender"], 
-                mode
-            )
-            yield message
+
+        try:
+            async for msg_data in generator:
+                message = self.repo.save_message(
+                    group_id, 
+                    MessageRole.ASSISTANT, 
+                    msg_data["content"], 
+                    msg_data["sender"], 
+                    mode
+                )
+                yield message
+        except Exception as e:
+            err_msg = str(e)
+            logger.error(f"讨论流式执行失败: {err_msg}")
+            if "RateLimitError" in err_msg or "429" in err_msg:
+                raise ValueError("模型调用触发限流（429）：免费额度已用尽，请切换付费模型或稍后重试。")
+            raise ValueError(f"讨论执行失败: {err_msg}")
             
     async def summarize_discussion(self, group_id: str, request: SummarizeRequest):
         """对群聊进行总结"""
@@ -296,7 +304,14 @@ class ChatService:
             history=history_msgs
         )
         
-        result = await ai_group_chat.summarize(request.instruction)
+        try:
+            result = await ai_group_chat.summarize(request.instruction)
+        except Exception as e:
+            err_msg = str(e)
+            logger.error(f"总结执行失败: {err_msg}")
+            if "RateLimitError" in err_msg or "429" in err_msg:
+                raise ValueError("总结触发限流（429）：免费额度已用尽，请切换付费模型或稍后重试。")
+            raise ValueError(f"总结执行失败: {err_msg}")
         
         message = self.repo.save_message(
             group_id,
@@ -419,6 +434,40 @@ class ChatService:
             source = "user" if msg.role == MessageRole.USER else _sanitize_name(msg.sender_name)
             autogen_msgs.append(TextMessage(content=msg.content, source=source))
         return autogen_msgs
+
+    async def get_context_stats(self, group_id: str) -> dict:
+        """获取群聊上下文统计（用于 API 拉取与 SSE 实时推送）"""
+        group = self.get_group(group_id)
+        if not group:
+            raise ValueError("群聊不存在")
+
+        min_context_window = self.get_min_context_window(group)
+        self.context_manager.set_max_tokens(min_context_window)
+
+        autogen_msgs = await self._get_history_as_autogen_messages(group_id, limit=0)
+        current_tokens = sum(self.context_manager.count_tokens(m.content) for m in autogen_msgs)
+
+        raw_messages = self.get_messages(group_id, limit=1000)
+        type_counts = Counter(msg.message_type.value for msg in raw_messages)
+        member_windows = {
+            m.name: _MODEL_CONTEXT_WINDOWS.get(m.model_id, self.DEFAULT_CONTEXT_WINDOW)
+            for m in group.members
+        } if group.members else {}
+
+        return {
+            "current_tokens": current_tokens,
+            "message_count": len(autogen_msgs),
+            "type_distribution": dict(type_counts),
+            "compression_config": {
+                "max_tokens": self.context_manager.max_tokens,
+                "threshold_ratio": group.compression_threshold,
+                "threshold_tokens": int(self.context_manager.max_tokens * group.compression_threshold),
+            },
+            "dynamic_context_window": {
+                "min_context_window": min_context_window,
+                "member_windows": member_windows,
+            }
+        }
     
     def get_messages(self, group_id: str, limit: int = 50) -> list[Message]:
         return self.repo.get_messages(group_id, limit)
