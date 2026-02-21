@@ -12,36 +12,7 @@ from loguru import logger
 
 from ..models import Message, MessageRole, MessageType
 from ..llm.client import llm_client
-
-
-# 分类提示词
-CLASSIFY_SYSTEM_PROMPT = """你是一个消息分类专家。你的任务是对对话消息进行分类，用于上下文压缩决策。
-
-消息类型定义：
-- user: 用户发送的消息（最重要，必须保留）
-- status: 关键状态消息（任务完成、决策确定、最终结论等里程碑节点）
-- reasoning: 推理过程消息（思考分析、方案比较、权衡讨论等中间过程）
-- failure: 失败记录消息（错误报告、失败原因、问题诊断等需要记住的教训）
-- normal: 普通消息（未明确属于以上类型的一般对话）
-
-分类依据：
-1. user类型：消息来自"用户"或"User"
-2. status类型：包含"完成"、"成功"、"确定"、"结论"、"最终"等确定性词汇
-3. reasoning类型：包含"考虑"、"分析"、"可能"、"如果"、"方案"等推理词汇
-4. failure类型：包含"失败"、"错误"、"问题"、"无法"、"bug"等失败词汇
-5. normal类型：不明确属于以上类型的消息
-
-请严格按照JSON格式输出，不要有其他内容。"""
-
-CLASSIFY_USER_PROMPT = """请对以下消息进行分类。
-
-消息列表：
-{messages}
-
-请返回JSON数组，每个元素对应一条消息的分类结果：
-[{{"index": 0, "type": "类型"}}, {{"index": 1, "type": "类型"}}, ...]
-
-注意：type 只能是 user/status/reasoning/failure/normal 之一。"""
+from ..prompts import CLASSIFY_SYSTEM_PROMPT, build_classify_user_prompt
 
 
 class MessageClassifier:
@@ -108,7 +79,7 @@ class MessageClassifier:
             msg_descriptions.append(f"[{i}] [{sender}]: {msg.content}")
         
         messages_text = "\n".join(msg_descriptions)
-        user_prompt = CLASSIFY_USER_PROMPT.format(messages=messages_text)
+        user_prompt = build_classify_user_prompt(messages_text)
         
         # 带重试的 LLM 调用
         last_error = None

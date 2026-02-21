@@ -12,12 +12,14 @@ from .schemas import (
     DiscussionRequest,
     DiscussionResponse,
     SummarizeRequest,
+    MemorySettingsUpdate,
     ModelCapability,
 )
 
 __all__ = [
     "DiscussionMode",
     "MessageRole",
+    "MessageType",
     "AIMember",
     "AIMemberCreate",
     "AIMemberUpdate",
@@ -27,5 +29,7 @@ __all__ = [
     "MessageCreate",
     "DiscussionRequest",
     "DiscussionResponse",
+    "SummarizeRequest",
+    "MemorySettingsUpdate",
     "ModelCapability",
 ]

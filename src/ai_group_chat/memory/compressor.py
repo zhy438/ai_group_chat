@@ -7,10 +7,11 @@
 - 低分消息：直接丢弃
 """
 
+import re
 from typing import List, Tuple, Optional
 from loguru import logger
 
-from ..models import Message, MessageType
+from ..models import Message, MessageRole, MessageType
 from .value_scorer import ValueThresholds
 
 
@@ -36,6 +37,16 @@ class ContextCompressor:
         self.high_threshold = high_threshold
         self.medium_threshold = medium_threshold
         self.summarizer = summarizer
+        # 短期压缩阶段可直接丢弃的低价值用户短句（可按业务继续扩展）
+        self.low_signal_user_phrases = {
+            "继续", "继续吧", "继续啊", "继续呀", "继续呢",
+            "你好", "您好", "hi", "hello", "hey",
+            "在吗", "在么", "在不",
+            "收到", "收到了", "收到啦",
+            "好的", "好的呀", "好的呢", "行", "行吧", "ok", "okay",
+            "嗯", "嗯嗯", "哦", "哦哦", "哈", "哈哈", "哈哈哈",
+            "1", "2", "3",
+        }
     
     def triage_messages(self, messages: List[Message]) -> Tuple[List[Message], List[Message], List[Message]]:
         """
@@ -110,6 +121,40 @@ class ContextCompressor:
         )
         
         return summary_message
+
+    @staticmethod
+    def _normalize_text_for_noise_check(text: str) -> str:
+        """归一化短句：去空白/常见标点，仅用于低价值短句判断。"""
+        raw = (text or "").strip().lower()
+        # 保留中英文与数字，移除标点与空白
+        return re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]+", "", raw)
+
+    def _is_low_signal_user_message(self, msg: Message) -> bool:
+        """判断是否为应在压缩阶段丢弃的低价值用户短句。"""
+        if msg.role != MessageRole.USER:
+            return False
+        normalized = self._normalize_text_for_noise_check(msg.content)
+        if not normalized:
+            return True
+        return normalized in self.low_signal_user_phrases
+
+    def _filter_low_signal_user_messages(self, messages: List[Message]) -> List[Message]:
+        """过滤低价值用户短句，避免其进入压缩后上下文。"""
+        if not messages:
+            return messages
+
+        filtered: List[Message] = []
+        dropped: List[Message] = []
+        for msg in messages:
+            if self._is_low_signal_user_message(msg):
+                dropped.append(msg)
+            else:
+                filtered.append(msg)
+
+        if dropped:
+            preview = " | ".join((m.content or "").strip()[:12] for m in dropped[:5])
+            logger.info(f"🧹 过滤低价值用户消息 {len(dropped)} 条: {preview}")
+        return filtered
     
     def compress(self, messages: List[Message], 
                  keep_recent: int = 5) -> List[Message]:
@@ -129,6 +174,7 @@ class ContextCompressor:
         Returns:
             压缩后的消息列表
         """
+        messages = self._filter_low_signal_user_messages(messages)
         if len(messages) <= keep_recent:
             return messages
         
@@ -218,6 +264,7 @@ class ContextCompressor:
         
         策略同 compress()，但使用异步 LLM 调用
         """
+        messages = self._filter_low_signal_user_messages(messages)
         if len(messages) <= keep_recent:
             return messages
         

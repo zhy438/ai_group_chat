@@ -31,6 +31,16 @@ class GroupDAO(BaseDAO):
             manager_temperature=row['manager_temperature'],
             discussion_mode=row.get('discussion_mode', DiscussionMode.FREE),
             compression_threshold=row.get('compression_threshold', 0.8),
+            memory_enabled=bool(row.get('memory_enabled', True)),
+            archive_enabled=bool(row.get('archive_enabled', True)),
+            retrieve_enabled=bool(row.get('retrieve_enabled', True)),
+            scope_user_global=bool(row.get('scope_user_global', True)),
+            scope_group_local=bool(row.get('scope_group_local', True)),
+            scope_agent_local=bool(row.get('scope_agent_local', True)),
+            memory_injection_ratio=row.get('memory_injection_ratio', 0.2),
+            memory_top_n=row.get('memory_top_n', 5),
+            memory_min_confidence=row.get('memory_min_confidence', 0.75),
+            memory_score_threshold=row.get('memory_score_threshold', 0.35),
             members=members or []
         )
     
@@ -92,6 +102,22 @@ class GroupDAO(BaseDAO):
         cursor = self.db.execute(
             "UPDATE groups SET compression_threshold = ? WHERE id = ?",
             (threshold, group_id)
+        )
+        return cursor.rowcount > 0
+
+    def update_memory_settings(self, group_id: str, settings: dict) -> bool:
+        """更新群聊长期记忆配置"""
+        if not settings:
+            return False
+        update_fields = []
+        params = []
+        for key, value in settings.items():
+            update_fields.append(f"{key} = ?")
+            params.append(value)
+        params.append(group_id)
+        cursor = self.db.execute(
+            f"UPDATE groups SET {', '.join(update_fields)} WHERE id = ?",
+            tuple(params)
         )
         return cursor.rowcount > 0
 

@@ -9,6 +9,10 @@ from .value_scorer import ValueScorer
 from .compressor import ContextCompressor
 from .context_manager import ContextManager
 from .summarizer import Summarizer, summarizer
+from .memory_extractor import MemoryExtractor
+from .memory_gateway import MemoryGateway
+from .long_term_memory_service import LongTermMemoryService
+from .embedding_service import EmbeddingService
 
 __all__ = [
     "MessageClassifier",
@@ -17,4 +21,8 @@ __all__ = [
     "ContextManager",
     "Summarizer",
     "summarizer",
+    "MemoryExtractor",
+    "MemoryGateway",
+    "LongTermMemoryService",
+    "EmbeddingService",
 ]

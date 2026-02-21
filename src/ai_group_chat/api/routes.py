@@ -1,5 +1,6 @@
 """API 路由定义"""
 
+import asyncio
 from pathlib import Path
 import yaml
 import json
@@ -11,9 +12,8 @@ from ..models import (
     GroupChat, GroupChatCreate,
     AIMember, AIMemberCreate, AIMemberUpdate,
     Message,
-    Message,
     DiscussionRequest, DiscussionResponse, SummarizeRequest,
-    ModelCapability,
+    MemorySettingsUpdate,
     ModelCapability,
 )
 from ..services import chat_service
@@ -162,6 +162,50 @@ async def update_compression_threshold(group_id: str, config: CompressionConfig)
     return {"message": "更新成功"}
 
 
+@router.get("/groups/{group_id}/memory/settings")
+async def get_memory_settings(group_id: str):
+    """获取群聊长期记忆配置"""
+    group = chat_service.get_group(group_id)
+    if not group:
+        raise HTTPException(status_code=404, detail="群聊不存在")
+    return {
+        "memory_enabled": group.memory_enabled,
+        "archive_enabled": group.archive_enabled,
+        "retrieve_enabled": group.retrieve_enabled,
+        "scope_user_global": group.scope_user_global,
+        "scope_group_local": group.scope_group_local,
+        "scope_agent_local": group.scope_agent_local,
+        "memory_injection_ratio": group.memory_injection_ratio,
+        "memory_top_n": group.memory_top_n,
+        "memory_min_confidence": group.memory_min_confidence,
+        "memory_score_threshold": group.memory_score_threshold,
+    }
+
+
+@router.put("/groups/{group_id}/memory/settings")
+async def update_memory_settings(group_id: str, data: MemorySettingsUpdate):
+    """更新群聊长期记忆配置"""
+    try:
+        raw = data.model_dump()
+    except AttributeError:
+        raw = data.dict()
+    payload = {k: v for k, v in raw.items() if v is not None}
+    if not payload:
+        raise HTTPException(status_code=400, detail="没有可更新的字段")
+    if not chat_service.update_memory_settings(group_id, payload):
+        raise HTTPException(status_code=404, detail="群聊不存在")
+    return {"message": "更新成功"}
+
+
+@router.get("/groups/{group_id}/memory/stats")
+async def get_memory_stats(group_id: str):
+    """获取群聊长期记忆统计"""
+    try:
+        return chat_service.get_memory_stats(group_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 # ============ 讨论功能 ============
 
 @router.post("/groups/{group_id}/discuss", response_model=DiscussionResponse)
@@ -195,8 +239,10 @@ async def start_discussion_stream(group_id: str, request: DiscussionRequest):
                 event_data = json.dumps({
                     "type": "message",
                     "id": message.id,
+                    "role": message.role,
                     "sender_name": message.sender_name,
                     "content": message.content,
+                    "mode": message.mode,
                     "created_at": message.created_at.isoformat() if message.created_at else None,
                 }, ensure_ascii=False)
                 yield f"data: {event_data}\n\n"
@@ -208,9 +254,15 @@ async def start_discussion_stream(group_id: str, request: DiscussionRequest):
             
             # 发送完成信号
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        except asyncio.CancelledError:
+            chat_service.stop_discussion(group_id)
+            logger.info(f"客户端已断开，已请求停止讨论: group_id={group_id}")
+            raise
         except ValueError as e:
+            logger.warning(f"流式讨论业务错误: group_id={group_id}, err={e}")
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
         except Exception as e:
+            logger.exception(f"流式讨论服务异常: group_id={group_id}")
             yield f"data: {json.dumps({'type': 'error', 'message': f'讨论服务异常: {str(e)}'})}\n\n"
     
     return StreamingResponse(
@@ -221,6 +273,15 @@ async def start_discussion_stream(group_id: str, request: DiscussionRequest):
             "Connection": "keep-alive",
         }
     )
+
+
+@router.post("/groups/{group_id}/discuss/stop")
+async def stop_discussion(group_id: str):
+    """手动终止当前群聊正在进行的讨论。"""
+    stopped = chat_service.stop_discussion(group_id)
+    if stopped:
+        return {"stopped": True, "message": "已请求终止讨论"}
+    return {"stopped": False, "message": "当前没有运行中的讨论"}
 
 
 @router.post("/groups/{group_id}/summarize")
@@ -234,8 +295,10 @@ async def summarize_discussion(group_id: str, request: SummarizeRequest):
                 event_data = json.dumps({
                     "type": "message",
                     "id": message.id,
+                    "role": message.role,
                     "sender_name": message.sender_name,
                     "content": message.content,
+                    "mode": message.mode,
                     "created_at": message.created_at.isoformat() if message.created_at else None,
                 }, ensure_ascii=False)
                 yield f"data: {event_data}\n\n"
@@ -248,8 +311,10 @@ async def summarize_discussion(group_id: str, request: SummarizeRequest):
             # 发送完成信号
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
         except ValueError as e:
+            logger.warning(f"流式总结业务错误: group_id={group_id}, err={e}")
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
         except Exception as e:
+            logger.exception(f"流式总结服务异常: group_id={group_id}")
             yield f"data: {json.dumps({'type': 'error', 'message': f'总结服务异常: {str(e)}'})}\n\n"
     
     return StreamingResponse(

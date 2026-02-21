@@ -2,12 +2,26 @@
 # 在此添加/修改可用的AI模型
 
 models:
-  - model_id: "mimo-v2-flash-free"
-    name: "MiMo V2 Flash"
-    provider: "xiaomi"
+  - model_id: "doubao-seed-2-0-mini"
+    name: "Doubao Seed 2.0 Mini"
+    provider: "doubao"
     supports_tools: true
     context_window: 256000
-    description: "小米MiMo V2 Flash，MoE架构，支持Hybrid-Thinking"
+    description: "豆包 Seed 2.0 Mini，支持函数/工具调用，适合低时延高并发"
+
+  - model_id: "gpt-4o-mini"
+    name: "GPT-4o Mini"
+    provider: "openai"
+    supports_tools: true
+    context_window: 128000
+    description: "OpenAI 轻量模型，性价比高，支持工具调用"
+
+  - model_id: "glm-4.7"
+    name: "GLM-4.7"
+    provider: "zhipu"
+    supports_tools: true
+    context_window: 200000
+    description: "智谱 GLM-4.7，长上下文模型，适合复杂任务"
 
   - model_id: "qwen-flash"
     name: "Qwen Flash"
@@ -22,3 +36,10 @@ models:
     supports_tools: true
     context_window: 64000
     description: "DeepSeek对话模型"
+
+  - model_id: "mimo-v2-flash-free"
+    name: "MiMo V2 Flash"
+    provider: "xiaomi"
+    supports_tools: true
+    context_window: 256000
+    description: "小米MiMo V2 Flash，MoE架构，支持Hybrid-Thinking（若账号无权限会自动回退）"

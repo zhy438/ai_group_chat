@@ -25,7 +25,7 @@ class MemberDAO(BaseDAO):
             name=row['name'],
             model_id=row['model_id'],
             description=row['description'],
-            persona=row['persona'],
+            task=row.get('persona'),
             thinking=bool(row['thinking']),
             temperature=row['temperature']
         )

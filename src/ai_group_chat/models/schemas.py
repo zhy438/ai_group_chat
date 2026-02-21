@@ -72,11 +72,21 @@ class GroupChat(BaseModel):
     id: str
     name: str
     members: list[AIMember] = []
-    manager_model: str = "gpt-4o-mini"
+    manager_model: str = "qwen-flash"
     manager_thinking: bool = False
     manager_temperature: float = 0.7
     discussion_mode: DiscussionMode = DiscussionMode.FREE
     compression_threshold: float = 0.8
+    memory_enabled: bool = True
+    archive_enabled: bool = True
+    retrieve_enabled: bool = True
+    scope_user_global: bool = True
+    scope_group_local: bool = True
+    scope_agent_local: bool = True
+    memory_injection_ratio: float = 0.2
+    memory_top_n: int = 5
+    memory_min_confidence: float = 0.75
+    memory_score_threshold: float = 0.35
     created_at: datetime = Field(default_factory=datetime.now)
 
 
@@ -94,6 +104,7 @@ class Message(BaseModel):
     role: MessageRole
     content: str
     sender_id: Optional[str] = None     # AI成员ID，用户消息为None
+    user_id: Optional[str] = None       # 发起用户ID（用于长期记忆隔离）
     sender_name: Optional[str] = None   # 发送者名称
     mode: Optional[DiscussionMode] = None # 消息所属的模式
     created_at: datetime = Field(default_factory=datetime.now)
@@ -116,6 +127,7 @@ class DiscussionRequest(BaseModel):
     """发起讨论的请求"""
     content: str                                        # 用户问题/话题
     user_name: str = "用户"                             # 用户昵称
+    user_id: str = "default-user"                       # 用户稳定ID（长期记忆隔离键）
     max_rounds: int = 3                                 # 最大讨论轮数
     mode: Optional[DiscussionMode] = None               # [可选] 本次讨论的模式，覆盖群组默认设置
 
@@ -129,6 +141,22 @@ class DiscussionResponse(BaseModel):
 class SummarizeRequest(BaseModel):
     """总结请求"""
     instruction: Optional[str] = "请对以上讨论进行总结，得出最终结论。"
+    user_name: str = "用户"
+    user_id: str = "default-user"
+
+
+class MemorySettingsUpdate(BaseModel):
+    """长期记忆配置更新"""
+    memory_enabled: Optional[bool] = None
+    archive_enabled: Optional[bool] = None
+    retrieve_enabled: Optional[bool] = None
+    scope_user_global: Optional[bool] = None
+    scope_group_local: Optional[bool] = None
+    scope_agent_local: Optional[bool] = None
+    memory_injection_ratio: Optional[float] = Field(default=None, ge=0.05, le=0.5)
+    memory_top_n: Optional[int] = Field(default=None, ge=1, le=10)
+    memory_min_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    memory_score_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
 # ============ 模型能力定义 ============

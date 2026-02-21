@@ -42,7 +42,7 @@ class ChatRepository:
         return [self._build_group(row) for row in rows]
 
     def create_group(self, name: str, discussion_mode: str = 'free',
-                     manager_model: str = "gpt-4o-mini") -> GroupChat:
+                     manager_model: str = "qwen-flash") -> GroupChat:
         group_id = self.group_dao.create(name, discussion_mode, manager_model)
         return self.get_group(group_id)
 
@@ -92,8 +92,19 @@ class ChatRepository:
 
     def save_message(self, group_id: str, role: MessageRole, content: str,
                      sender_name: str, mode: str,
+                     sender_id: str = None,
+                     user_id: str = "default-user",
                      message_type: MessageType = MessageType.NORMAL) -> Message:
-        msg_id = self.message_dao.save(group_id, role, content, sender_name, mode, message_type)
+        msg_id = self.message_dao.save(
+            group_id=group_id,
+            role=role,
+            content=content,
+            sender_name=sender_name,
+            mode=mode,
+            sender_id=sender_id,
+            user_id=user_id,
+            message_type=message_type,
+        )
         row = self.message_dao.get_by_id(msg_id)
         return self.message_dao._row_to_message(row)
 
@@ -114,6 +125,11 @@ class ChatRepository:
         rows = self.message_dao.get_messages_after(group_id, last_message_id)
         return [self.message_dao._row_to_message(row) for row in rows]
 
+    def get_messages_since_cursor(self, group_id: str, last_created_at, last_message_id: str, limit: int = 200) -> List[Message]:
+        """按游标增量读取消息"""
+        rows = self.message_dao.get_messages_since_cursor(group_id, last_created_at, last_message_id, limit)
+        return [self.message_dao._row_to_message(row) for row in rows]
+
     # ============ Context Snapshots ============
     
     def get_latest_snapshot(self, group_id: str) -> Optional[dict]:
@@ -124,3 +140,6 @@ class ChatRepository:
 
     def update_group_compression_threshold(self, group_id: str, threshold: float) -> bool:
         return self.group_dao.update_compression_threshold(group_id, threshold)
+
+    def update_group_memory_settings(self, group_id: str, settings: dict) -> bool:
+        return self.group_dao.update_memory_settings(group_id, settings)

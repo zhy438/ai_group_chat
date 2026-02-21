@@ -10,29 +10,7 @@ from loguru import logger
 
 from ..models import Message
 from ..llm.client import llm_client
-
-
-# 摘要提示词
-SUMMARIZE_SYSTEM_PROMPT = """你是一个对话摘要专家。你的任务是将一段对话历史压缩成简洁的结构化摘要。
-
-要求：
-1. 保留关键信息：用户的核心问题、重要决策、任务状态
-2. 删除冗余：移除重复的讨论过程、无关的闲聊
-3. 保持结构：使用清晰的分点格式
-4. 控制长度：摘要长度不超过原文的 30%
-
-输出格式：
-📋 对话摘要
-- 核心话题：...
-- 关键结论：...
-- 待办事项：...（如有）
-"""
-
-SUMMARIZE_USER_PROMPT = """请对以下对话历史进行摘要：
-
-{conversation}
-
-请生成简洁的结构化摘要："""
+from ..prompts import SUMMARIZE_SYSTEM_PROMPT, build_summarize_user_prompt
 
 
 class Summarizer:
@@ -76,7 +54,7 @@ class Summarizer:
             conversation_lines.append(f"[{sender}]: {msg.content}")
         
         conversation_text = "\n".join(conversation_lines)
-        user_prompt = SUMMARIZE_USER_PROMPT.format(conversation=conversation_text)
+        user_prompt = build_summarize_user_prompt(conversation_text)
         
         # 带重试的 LLM 调用
         last_error = None

@@ -34,6 +34,8 @@ class MessageDAO(BaseDAO):
             group_id=row['group_id'],
             role=row['role'],
             content=row['content'],
+            sender_id=row.get('sender_id'),
+            user_id=row.get('user_id', 'default-user'),
             sender_name=row['sender_name'],
             mode=row['mode'],
             created_at=created_at,
@@ -96,6 +98,8 @@ class MessageDAO(BaseDAO):
     
     def save(self, group_id: str, role: MessageRole, content: str,
              sender_name: str, mode: str,
+             sender_id: str = None,
+             user_id: str = "default-user",
              message_type: MessageType = MessageType.NORMAL) -> str:
         """
         保存消息
@@ -105,10 +109,39 @@ class MessageDAO(BaseDAO):
         """
         msg_id = str(uuid4())
         self.db.execute("""
-            INSERT INTO messages (id, group_id, role, content, sender_name, mode, message_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (msg_id, group_id, role, content, sender_name, mode, message_type.value))
+            INSERT INTO messages (id, group_id, role, content, sender_id, user_id, sender_name, mode, message_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (msg_id, group_id, role, content, sender_id, user_id, sender_name, mode, message_type.value))
         return msg_id
+
+    def get_messages_since_cursor(
+        self,
+        group_id: str,
+        last_created_at,
+        last_message_id: str = "",
+        limit: int = 200,
+    ) -> List[dict]:
+        """按(created_at, id)游标增量获取消息"""
+        if not last_created_at:
+            sql = """
+                SELECT * FROM messages
+                WHERE group_id = ?
+                ORDER BY created_at ASC, id ASC
+                LIMIT ?
+            """
+            return self.db.fetch_all(sql, (group_id, limit))
+
+        sql = """
+            SELECT * FROM messages
+            WHERE group_id = ?
+              AND (
+                    created_at > ?
+                    OR (created_at = ? AND id > ?)
+                  )
+            ORDER BY created_at ASC, id ASC
+            LIMIT ?
+        """
+        return self.db.fetch_all(sql, (group_id, last_created_at, last_created_at, last_message_id or "", limit))
     
     def update_compression(self, message_id: str,
                           is_compressed: bool,

@@ -1,11 +1,13 @@
 """聊天服务 - 业务逻辑层"""
 
+import asyncio
 import re
 from collections import Counter
 from pathlib import Path
 import yaml
 from loguru import logger
 from autogen_agentchat.messages import TextMessage
+from autogen_agentchat.conditions import ExternalTermination
 
 from ..models import (
     GroupChat, GroupChatCreate,
@@ -15,7 +17,8 @@ from ..models import (
     DiscussionMode,
 )
 from ..agents import AIGroupChat
-from ..memory import ContextManager
+from ..memory import ContextManager, LongTermMemoryService
+from ..tools import GroupToolkitBundle, build_group_toolkits
 from .chat_repository import ChatRepository
 
 # 容错导入预设数据
@@ -59,10 +62,15 @@ class ChatService:
     """
     
     DEFAULT_CONTEXT_WINDOW = 128000  # 默认上下文窗口
+    AUTO_INJECTION_MEMORY_TYPES = {"user_profile", "user_preference", "user_habit", "user_constraint"}
+    AUTO_INJECTION_SCOPES = {"user_global"}
     
     def __init__(self):
         self.repo = ChatRepository()
         self.context_manager = ContextManager()  # 上下文管理器
+        self.long_term_memory = LongTermMemoryService(self.repo)
+        self._active_discussions: dict[str, ExternalTermination] = {}
+        self._discussion_lock = asyncio.Lock()
         self._ensure_models_loaded()
         self._load_presets()
     
@@ -181,6 +189,158 @@ class ChatService:
             # Do not fail request, user config is updated
             
         return True
+
+    def update_memory_settings(self, group_id: str, settings: dict) -> bool:
+        """更新群聊长期记忆配置"""
+        if not self.repo.get_group(group_id):
+            return False
+        return self.repo.update_group_memory_settings(group_id, settings)
+
+    def get_memory_stats(self, group_id: str) -> dict:
+        """获取长期记忆统计"""
+        if not self.repo.get_group(group_id):
+            raise ValueError("群聊不存在")
+        return self.long_term_memory.get_group_stats(group_id)
+
+    def _build_toolkits(self, group: GroupChat, user_id: str) -> GroupToolkitBundle:
+        """构建群聊工具集：成员共享工具 + 系统Agent专属工具。"""
+        try:
+            return build_group_toolkits(
+                group=group,
+                user_id=user_id,
+                memory_service=self.long_term_memory,
+                max_context_tokens=self.get_min_context_window(group),
+            )
+        except Exception as e:
+            logger.warning(f"构建工具集失败，降级为无工具模式: {e}")
+            return GroupToolkitBundle(member_tools=[], manager_tools=[])
+
+    @staticmethod
+    def _build_system_termination_notice(reason: str | None = None) -> str:
+        """构造系统Agent提前终止提示。"""
+        base = "系统已判断当前话题已完成，已主动终止本轮讨论。"
+        cleaned = (reason or "").strip()
+        cleaned = re.sub(r"^已确认提前终止讨论[:：]?", "", cleaned).strip()
+        if cleaned:
+            return f"{base}（终止原因：{cleaned}）"
+        return base
+
+    @staticmethod
+    def _build_manual_termination_notice() -> str:
+        """构造手动终止提示。"""
+        return "已手动终止本轮讨论。"
+
+    async def _register_active_discussion(self, group_id: str, termination: ExternalTermination) -> None:
+        """注册当前群聊的活跃讨论；若已有运行中的讨论，先请求其停止。"""
+        async with self._discussion_lock:
+            previous = self._active_discussions.get(group_id)
+            if previous and previous is not termination:
+                previous.set()
+            self._active_discussions[group_id] = termination
+
+    async def _clear_active_discussion(self, group_id: str, termination: ExternalTermination) -> None:
+        """清理活跃讨论注册（仅清理当前实例）。"""
+        async with self._discussion_lock:
+            current = self._active_discussions.get(group_id)
+            if current is termination:
+                self._active_discussions.pop(group_id, None)
+
+    def stop_discussion(self, group_id: str) -> bool:
+        """手动终止群聊中正在运行的讨论。"""
+        termination = self._active_discussions.get(group_id)
+        if not termination:
+            return False
+        termination.set()
+        return True
+
+    async def _build_auto_injection_memory_block(self, group: GroupChat, user_id: str, query: str) -> str:
+        """自动注入仅包含用户偏好，不注入群聊结论/agent画像。"""
+        return await self.long_term_memory.build_injection_context(
+            group=group,
+            user_id=user_id,
+            query=query,
+            max_context_tokens=self.get_min_context_window(group),
+            memory_types=self.AUTO_INJECTION_MEMORY_TYPES,
+            scopes=self.AUTO_INJECTION_SCOPES,
+        )
+
+    @staticmethod
+    def _copy_model(obj, updates: dict):
+        """兼容 Pydantic v1/v2 的模型拷贝"""
+        try:
+            return obj.model_copy(update=updates)
+        except AttributeError:
+            return obj.copy(update=updates)
+
+    @staticmethod
+    def _extract_invalid_model_id(err_msg: str) -> str | None:
+        """从错误信息中提取无权限/无效模型ID"""
+        if not err_msg:
+            return None
+        if "Incorrect model ID" not in err_msg and "do not have permission to use this model" not in err_msg:
+            return None
+
+        patterns = [
+            r"use this model\s+([a-zA-Z0-9._-]+)",
+            r"model\s+([a-zA-Z0-9._-]+)\s+\(tid:",
+            r"'model':\s*'([a-zA-Z0-9._-]+)'",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, err_msg)
+            if match:
+                return match.group(1)
+        return None
+
+    def _pick_fallback_model(self, bad_model_id: str, group: GroupChat) -> str | None:
+        """选择一个备用模型用于自动降级重试"""
+        candidates: list[str] = []
+        candidates.extend(list(_MODEL_CONTEXT_WINDOWS.keys()))
+        candidates.extend([m.model_id for m in group.members])
+        if group.manager_model:
+            candidates.append(group.manager_model)
+
+        for model_id in candidates:
+            if model_id and model_id != bad_model_id:
+                return model_id
+        return None
+
+    def _replace_bad_model(self, group: GroupChat, bad_model_id: str, fallback_model_id: str) -> GroupChat | None:
+        """构造替换了无效模型ID的临时群聊对象（仅本次请求使用）"""
+        replaced = False
+        patched_members = []
+        for member in group.members:
+            if member.model_id == bad_model_id:
+                patched_members.append(self._copy_model(member, {"model_id": fallback_model_id}))
+                replaced = True
+            else:
+                patched_members.append(member)
+
+        manager_model = group.manager_model
+        if manager_model == bad_model_id:
+            manager_model = fallback_model_id
+            replaced = True
+
+        if not replaced:
+            return None
+
+        return self._copy_model(group, {"members": patched_members, "manager_model": manager_model})
+
+    def _try_build_fallback_group(self, group: GroupChat, err_msg: str) -> tuple[GroupChat | None, str | None]:
+        """命中模型权限错误时，尝试构造降级重试群聊"""
+        bad_model_id = self._extract_invalid_model_id(err_msg)
+        if not bad_model_id:
+            return None, None
+
+        fallback_model_id = self._pick_fallback_model(bad_model_id, group)
+        if not fallback_model_id:
+            return None, f"模型 `{bad_model_id}` 不可用，且没有可用备用模型。"
+
+        patched_group = self._replace_bad_model(group, bad_model_id, fallback_model_id)
+        if not patched_group:
+            return None, f"模型 `{bad_model_id}` 不在当前群聊配置中，无法自动替换。"
+
+        tip = f"检测到模型 `{bad_model_id}` 无权限，已自动回退到 `{fallback_model_id}` 重试本轮请求。"
+        return patched_group, tip
     
     def remove_member(self, group_id: str, member_id: str) -> bool:
         return self.repo.remove_member(group_id, member_id)
@@ -199,46 +359,108 @@ class ChatService:
         mode = request.mode if request.mode else DiscussionMode.FREE
 
         # 保存用户消息
-        self.repo.save_message(group_id, MessageRole.USER, request.content, request.user_name, mode)
-
-        if mode == DiscussionMode.QA:
-             # QA 模式不需要很长的上下文
-             history_msgs = []
-        else:
-            # FREE 模式需要上下文
-            history_msgs = await self._get_history_as_autogen_messages(group_id, limit=50, exclude_last=True)
-        
-        ai_group_chat = AIGroupChat(
-            members=group.members,
-            user_name=request.user_name,
+        self.repo.save_message(
+            group_id=group_id,
+            role=MessageRole.USER,
+            content=request.content,
+            sender_name=request.user_name,
             mode=mode,
-            history=history_msgs,
+            sender_id=None,
+            user_id=request.user_id,
         )
-        
-        # 运行讨论
-        if mode == DiscussionMode.QA:
-            messages_data = []
-            async for msg in ai_group_chat.stream_qa_discussion(request.content):
-                messages_data.append(msg)
-        else:
-             messages_data = await ai_group_chat.discuss(
-                question=request.content,
-                max_rounds=request.max_rounds,
-            )
-        
-        # 保存结果
-        result_messages = []
-        for msg_data in messages_data:
-            message = self.repo.save_message(
-                group_id, 
-                MessageRole.ASSISTANT, 
-                msg_data["content"], 
-                msg_data["sender"], 
-                mode
-            )
-            result_messages.append(message)
-        
-        return DiscussionResponse(messages=result_messages, summary=None)
+        runtime_group = group
+        for attempt in range(2):
+            member_id_map = {m.name: m.id for m in runtime_group.members}
+            try:
+                if mode == DiscussionMode.QA:
+                    # QA 模式不需要很长的上下文
+                    history_msgs = []
+                else:
+                    # FREE 模式需要上下文
+                    history_msgs = await self._get_history_as_autogen_messages(group_id, limit=50, exclude_last=True)
+
+                # 条件注入长期记忆（仅注入一次，不会每轮灌入）
+                memory_block = await self._build_auto_injection_memory_block(
+                    group=runtime_group,
+                    user_id=request.user_id,
+                    query=request.content,
+                )
+                if memory_block:
+                    history_msgs = [TextMessage(content=memory_block, source="system")] + history_msgs
+                toolkits = self._build_toolkits(runtime_group, request.user_id)
+
+                ai_group_chat = AIGroupChat(
+                    members=runtime_group.members,
+                    user_name=request.user_name,
+                    max_rounds=request.max_rounds,
+                    mode=mode,
+                    manager_model=runtime_group.manager_model,
+                    manager_thinking=runtime_group.manager_thinking,
+                    manager_temperature=runtime_group.manager_temperature,
+                    history=history_msgs,
+                    shared_tools=toolkits.member_tools,
+                    manager_tools=toolkits.manager_tools,
+                )
+
+                # 运行讨论
+                if mode == DiscussionMode.QA:
+                    messages_data = []
+                    async for msg in ai_group_chat.stream_qa_discussion(request.content):
+                        messages_data.append(msg)
+                else:
+                    messages_data = await ai_group_chat.discuss(
+                        question=request.content,
+                        max_rounds=request.max_rounds,
+                    )
+
+                # 保存结果
+                result_messages = []
+                for msg_data in messages_data:
+                    message = self.repo.save_message(
+                        group_id=group_id,
+                        role=MessageRole.ASSISTANT,
+                        content=msg_data["content"],
+                        sender_name=msg_data["sender"],
+                        mode=mode,
+                        sender_id=member_id_map.get(msg_data["sender"]),
+                        user_id=request.user_id,
+                    )
+                    result_messages.append(message)
+
+                if ai_group_chat.was_terminated_by_system():
+                    notice = self.repo.save_message(
+                        group_id=group_id,
+                        role=MessageRole.SYSTEM,
+                        content=self._build_system_termination_notice(
+                            ai_group_chat.last_system_termination_reason
+                        ),
+                        sender_name="系统",
+                        mode=mode,
+                        sender_id=None,
+                        user_id=request.user_id,
+                    )
+                    result_messages.append(notice)
+
+                self._schedule_memory_archive(group=group, user_id=request.user_id, reason="discussion_sync")
+                return DiscussionResponse(messages=result_messages, summary=None)
+            except Exception as e:
+                err_msg = str(e)
+                if attempt == 0:
+                    fallback_group, tip = self._try_build_fallback_group(runtime_group, err_msg)
+                    if fallback_group:
+                        logger.warning(tip)
+                        runtime_group = fallback_group
+                        continue
+                logger.error(f"讨论执行失败: {err_msg}")
+                if "RateLimitError" in err_msg or "429" in err_msg:
+                    raise ValueError("模型调用触发限流（429）：免费额度已用尽，请切换付费模型或稍后重试。")
+                if self._extract_invalid_model_id(err_msg):
+                    raise ValueError(
+                        f"模型不可用或无权限：{err_msg}\n请在成员/管理员设置里切换到可用模型后重试。"
+                    )
+                raise ValueError(f"讨论执行失败: {err_msg}")
+
+        raise ValueError("讨论执行失败：自动回退后仍未成功。")
     
     async def stream_discussion(self, group_id: str, request: DiscussionRequest):
         """流式启动群聊讨论"""
@@ -249,78 +471,207 @@ class ChatService:
         mode = request.mode if request.mode else DiscussionMode.FREE
 
         # 保存用户消息
-        self.repo.save_message(group_id, MessageRole.USER, request.content, request.user_name, mode)
-
-        # 获取历史消息作为上下文
-        # 注意: exclude_last=True 是为了避免重复包含刚刚保存的用户消息，
-        # 因为在 AutoGen 中，用户的提问通常作为 initiate_chat 的 message 参数传入
-        history_msgs = await self._get_history_as_autogen_messages(group_id, limit=50, exclude_last=True)
-
-        ai_group_chat = AIGroupChat(
-            members=group.members,
-            user_name=request.user_name,
-            max_rounds=request.max_rounds,
+        self.repo.save_message(
+            group_id=group_id,
+            role=MessageRole.USER,
+            content=request.content,
+            sender_name=request.user_name,
             mode=mode,
-            manager_model=group.manager_model,
-            manager_thinking=group.manager_thinking,
-            manager_temperature=group.manager_temperature,
-            history=history_msgs,
+            sender_id=None,
+            user_id=request.user_id,
         )
-
-        if mode == DiscussionMode.QA:
-            generator = ai_group_chat.stream_qa_discussion(request.content)
-        else:
-            generator = ai_group_chat.stream_discuss(request.content, request.max_rounds)
-
+        external_termination = ExternalTermination()
+        await self._register_active_discussion(group_id, external_termination)
+        runtime_group = group
         try:
-            async for msg_data in generator:
-                message = self.repo.save_message(
-                    group_id, 
-                    MessageRole.ASSISTANT, 
-                    msg_data["content"], 
-                    msg_data["sender"], 
-                    mode
-                )
-                yield message
-        except Exception as e:
-            err_msg = str(e)
-            logger.error(f"讨论流式执行失败: {err_msg}")
-            if "RateLimitError" in err_msg or "429" in err_msg:
-                raise ValueError("模型调用触发限流（429）：免费额度已用尽，请切换付费模型或稍后重试。")
-            raise ValueError(f"讨论执行失败: {err_msg}")
+            for attempt in range(2):
+                member_id_map = {m.name: m.id for m in runtime_group.members}
+                emitted_count = 0
+                try:
+                    # 获取历史消息作为上下文
+                    # 注意: exclude_last=True 是为了避免重复包含刚刚保存的用户消息，
+                    # 因为在 AutoGen 中，用户的提问通常作为 initiate_chat 的 message 参数传入
+                    history_msgs = await self._get_history_as_autogen_messages(group_id, limit=50, exclude_last=True)
+                    memory_block = await self._build_auto_injection_memory_block(
+                        group=runtime_group,
+                        user_id=request.user_id,
+                        query=request.content,
+                    )
+                    if memory_block:
+                        history_msgs = [TextMessage(content=memory_block, source="system")] + history_msgs
+                    toolkits = self._build_toolkits(runtime_group, request.user_id)
+
+                    ai_group_chat = AIGroupChat(
+                        members=runtime_group.members,
+                        user_name=request.user_name,
+                        max_rounds=request.max_rounds,
+                        mode=mode,
+                        manager_model=runtime_group.manager_model,
+                        manager_thinking=runtime_group.manager_thinking,
+                        manager_temperature=runtime_group.manager_temperature,
+                        history=history_msgs,
+                        shared_tools=toolkits.member_tools,
+                        manager_tools=toolkits.manager_tools,
+                        external_termination=external_termination,
+                    )
+
+                    if mode == DiscussionMode.QA:
+                        generator = ai_group_chat.stream_qa_discussion(request.content)
+                    else:
+                        generator = ai_group_chat.stream_discuss(request.content, request.max_rounds)
+
+                    async for msg_data in generator:
+                        message = self.repo.save_message(
+                            group_id=group_id,
+                            role=MessageRole.ASSISTANT,
+                            content=msg_data["content"],
+                            sender_name=msg_data["sender"],
+                            mode=mode,
+                            sender_id=member_id_map.get(msg_data["sender"]),
+                            user_id=request.user_id,
+                        )
+                        emitted_count += 1
+                        yield message
+
+                    if ai_group_chat.was_terminated_by_system():
+                        notice = self.repo.save_message(
+                            group_id=group_id,
+                            role=MessageRole.SYSTEM,
+                            content=self._build_system_termination_notice(
+                                ai_group_chat.last_system_termination_reason
+                            ),
+                            sender_name="系统",
+                            mode=mode,
+                            sender_id=None,
+                            user_id=request.user_id,
+                        )
+                        emitted_count += 1
+                        yield notice
+                    elif ai_group_chat.was_terminated_externally():
+                        notice = self.repo.save_message(
+                            group_id=group_id,
+                            role=MessageRole.SYSTEM,
+                            content=self._build_manual_termination_notice(),
+                            sender_name="系统",
+                            mode=mode,
+                            sender_id=None,
+                            user_id=request.user_id,
+                        )
+                        emitted_count += 1
+                        yield notice
+                    self._schedule_memory_archive(group=group, user_id=request.user_id, reason="discussion_stream")
+                    return
+                except Exception as e:
+                    err_msg = str(e)
+                    bad_model_id = self._extract_invalid_model_id(err_msg)
+                    if attempt == 0 and emitted_count == 0:
+                        fallback_group, tip = self._try_build_fallback_group(runtime_group, err_msg)
+                        if fallback_group:
+                            logger.warning(tip)
+                            runtime_group = fallback_group
+                            continue
+                    logger.error(f"讨论流式执行失败: {err_msg}")
+                    if "RateLimitError" in err_msg or "429" in err_msg:
+                        raise ValueError("模型调用触发限流（429）：免费额度已用尽，请切换付费模型或稍后重试。")
+                    if bad_model_id:
+                        # 流式模式可能已产生部分回复；此时不抛异常中断前端，而是给出系统提示并结束本轮
+                        if emitted_count > 0:
+                            tip = (
+                                f"成员模型 `{bad_model_id}` 无权限，已提前结束本轮讨论。"
+                                "请在成员/管理员设置里切换到可用模型后重试。"
+                            )
+                            logger.warning(tip)
+                            notice = self.repo.save_message(
+                                group_id=group_id,
+                                role=MessageRole.SYSTEM,
+                                content=tip,
+                                sender_name="系统",
+                                mode=mode,
+                                sender_id=None,
+                                user_id=request.user_id,
+                            )
+                            yield notice
+                            self._schedule_memory_archive(group=group, user_id=request.user_id, reason="discussion_stream")
+                            return
+                        raise ValueError(
+                            f"模型不可用或无权限：{err_msg}\n请在成员/管理员设置里切换到可用模型后重试。"
+                        )
+                    raise ValueError(f"讨论执行失败: {err_msg}")
+        finally:
+            await self._clear_active_discussion(group_id, external_termination)
             
     async def summarize_discussion(self, group_id: str, request: SummarizeRequest):
         """对群聊进行总结"""
         group = self.get_group(group_id)
         if not group: return
-        
-        history_msgs = await self._get_history_as_autogen_messages(group_id, limit=100)
-        
-        ai_group_chat = AIGroupChat(
-            members=group.members,
-            user_name="User",
-            mode=DiscussionMode.FREE,
-            manager_model=group.manager_model, 
-            history=history_msgs
-        )
-        
-        try:
-            result = await ai_group_chat.summarize(request.instruction)
-        except Exception as e:
-            err_msg = str(e)
-            logger.error(f"总结执行失败: {err_msg}")
-            if "RateLimitError" in err_msg or "429" in err_msg:
-                raise ValueError("总结触发限流（429）：免费额度已用尽，请切换付费模型或稍后重试。")
-            raise ValueError(f"总结执行失败: {err_msg}")
-        
-        message = self.repo.save_message(
-            group_id,
-            MessageRole.ASSISTANT,
-            result["content"],
-            result["sender"],
-            DiscussionMode.FREE
-        )
-        yield message
+        runtime_group = group
+        for attempt in range(2):
+            member_id_map = {m.name: m.id for m in runtime_group.members}
+            try:
+                history_msgs = await self._get_history_as_autogen_messages(group_id, limit=100)
+                memory_block = await self._build_auto_injection_memory_block(
+                    group=runtime_group,
+                    user_id=request.user_id,
+                    query=request.instruction or "总结并提炼群聊结论",
+                )
+                if memory_block:
+                    history_msgs = [TextMessage(content=memory_block, source="system")] + history_msgs
+                toolkits = self._build_toolkits(runtime_group, request.user_id)
+
+                ai_group_chat = AIGroupChat(
+                    members=runtime_group.members,
+                    user_name=request.user_name or "User",
+                    mode=DiscussionMode.FREE,
+                    manager_model=runtime_group.manager_model,
+                    manager_thinking=runtime_group.manager_thinking,
+                    manager_temperature=runtime_group.manager_temperature,
+                    history=history_msgs,
+                    shared_tools=toolkits.member_tools,
+                )
+
+                result = await ai_group_chat.summarize(request.instruction)
+                message = self.repo.save_message(
+                    group_id=group_id,
+                    role=MessageRole.ASSISTANT,
+                    content=result["content"],
+                    sender_name=result["sender"],
+                    mode=DiscussionMode.FREE,
+                    sender_id=member_id_map.get(result["sender"]),
+                    user_id=request.user_id,
+                )
+                self._schedule_memory_archive(group=group, user_id=request.user_id, reason="summarize")
+                yield message
+                return
+            except Exception as e:
+                err_msg = str(e)
+                if attempt == 0:
+                    fallback_group, tip = self._try_build_fallback_group(runtime_group, err_msg)
+                    if fallback_group:
+                        logger.warning(tip)
+                        runtime_group = fallback_group
+                        continue
+                logger.error(f"总结执行失败: {err_msg}")
+                if "RateLimitError" in err_msg or "429" in err_msg:
+                    raise ValueError("总结触发限流（429）：免费额度已用尽，请切换付费模型或稍后重试。")
+                if self._extract_invalid_model_id(err_msg):
+                    raise ValueError(
+                        f"模型不可用或无权限：{err_msg}\n请在成员/管理员设置里切换到可用模型后重试。"
+                    )
+                raise ValueError(f"总结执行失败: {err_msg}")
+
+    def _schedule_memory_archive(self, group: GroupChat, user_id: str, reason: str) -> None:
+        """后台异步归档长期记忆，不阻塞主链路"""
+        async def runner():
+            try:
+                await self.long_term_memory.archive_incremental(
+                    group=group,
+                    user_id=user_id,
+                    force=True,
+                    reason=reason,
+                )
+            except Exception as e:
+                logger.error(f"后台长期记忆归档失败: {e}")
+        asyncio.create_task(runner())
     
     async def _get_history_as_autogen_messages(self, group_id: str, limit: int = 50, exclude_last: bool = False) -> list[TextMessage]:
         """
@@ -453,6 +804,7 @@ class ChatService:
             m.name: _MODEL_CONTEXT_WINDOWS.get(m.model_id, self.DEFAULT_CONTEXT_WINDOW)
             for m in group.members
         } if group.members else {}
+        memory_stats = self.long_term_memory.get_group_stats(group_id)
 
         return {
             "current_tokens": current_tokens,
@@ -466,7 +818,8 @@ class ChatService:
             "dynamic_context_window": {
                 "min_context_window": min_context_window,
                 "member_windows": member_windows,
-            }
+            },
+            "memory_stats": memory_stats,
         }
     
     def get_messages(self, group_id: str, limit: int = 50) -> list[Message]:

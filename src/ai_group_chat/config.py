@@ -20,11 +20,17 @@ class Settings(BaseSettings):
     ai_api_key: str = ""
     
     # 默认模型配置
-    default_model: str = "mimo-v2-flash-free"
+    default_model: str = "qwen-flash"
     
     # LangGraph 配置
     max_discussion_rounds: int = 5  # 最大讨论轮数
-    
+
+    # 长期记忆配置
+    mem0_enabled: bool = False
+    mem_vector_enabled: bool = True
+    mem_embedding_model: str = "text-embedding-3-small"
+    mem_embedding_dimensions: int = 1536
+
     # LangSmith 追踪配置
     langchain_tracing_v2: bool = False
     langchain_endpoint: str = "https://api.smith.langchain.com"
@@ -41,4 +47,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

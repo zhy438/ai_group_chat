@@ -4,7 +4,7 @@
 PRESET_GROUPS = [
     {
         "name": "AI测试群",
-        "manager_model": "gpt-4o-mini",
+        "manager_model": "qwen-flash",
         "members": [
             {
                 "name": "mimo-v2-flash-free",

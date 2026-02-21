@@ -10,6 +10,7 @@ from .context_snapshot_dao import ContextSnapshotDAO, context_snapshot_dao
 from .group_dao import GroupDAO, group_dao
 from .member_dao import MemberDAO, member_dao
 from .message_dao import MessageDAO, message_dao
+from .long_term_memory_dao import LongTermMemoryDAO, long_term_memory_dao
 
 __all__ = [
     # 数据库连接
@@ -26,4 +27,7 @@ __all__ = [
     # 消息
     "MessageDAO",
     "message_dao",
+    # 长期记忆
+    "LongTermMemoryDAO",
+    "long_term_memory_dao",
 ]
